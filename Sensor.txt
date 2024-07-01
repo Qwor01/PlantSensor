@@ -1,0 +1,145 @@
+#include <DHT.h>
+#include <Wire.h>
+#include <BH1750.h>
+#include <SD.h>
+#include <SPI.h>
+#include <Esp.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <UniversalTelegramBot.h>
+
+#define I2C_SDA 25
+#define I2C_SCL 26
+#define DHT_PIN 16
+#define BAT_ADC 33
+#define SALT_PIN 34
+#define SOIL_PIN 32
+#define BOOT_PIN 0
+#define POWER_CTRL 4
+#define USER_BUTTON 35
+
+#define soil_max 1638
+#define soil_min 3285
+
+#define DHT_TYPE DHT11
+
+const char* ssid = "SSID";
+const char* password = "PASSWORD"; 
+
+const char* telegramBotToken = "BOT_TOKEN"; 
+const char* telegramChatID = "CHAT_ID"; 
+
+float luxRead;
+float advice;
+float soil;
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(telegramBotToken, client);
+BH1750 lightMeter(0x23); //0x23
+DHT dht(DHT_PIN, DHT_TYPE);
+
+void setup() {
+  // Debug console
+  Serial.begin(115200);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Conectando a WiFi...");
+  }
+  Serial.println("Conectado a WiFi");
+
+  dht.begin();
+
+  pinMode(POWER_CTRL, OUTPUT);
+  digitalWrite(POWER_CTRL, 1);
+  delay(1000);
+
+  bool wireOk = Wire.begin(I2C_SDA, I2C_SCL);
+  if (wireOk) {
+    Serial.println(F("Wire ok"));
+  } else {
+    Serial.println(F("Wire NOK"));
+  }
+  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    Serial.println(F("BH1750 Advanced begin"));
+  } else {
+    Serial.println(F("Error initialising BH1750"));
+  }
+
+
+  // Configurar el cliente seguro
+  client.setInsecure();
+}
+
+void loop() {
+
+  luxRead = lightMeter.readLightLevel();
+  Serial.print("Lux - "); Serial.println(luxRead);
+
+  uint16_t soil = readSoil();
+
+  String lowhigh;
+  if (soil <= 30) {
+    lowhigh = "PORCENTAJE DE HUMEDAD DE SUELO BAJA";
+  } else if (soil >= 60) {
+    lowhigh = "PORCENTAJE DE HUMEDAD DE SUELO ALTA";
+  }
+
+  uint32_t salt = readSalt();
+  String advice;
+  if (salt < 201) {
+    advice = "Necesitada";
+  } else if (salt < 251) {
+    advice = "Baja";
+  } else if (salt < 351) {
+    advice = "Optimo";
+  } else if (salt > 350) {
+    advice = "Muy alta";
+  }
+
+  float t = dht.readTemperature(); 
+
+  float h = dht.readHumidity();
+  String message = "Lux: " + String(luxRead) + "\nPorcentaje de humedad de suelo - " + String(soil) + "% - " + lowhigh + "\nNivel de Sal de suelo - " + String(salt) + " - " + advice + "\nTemperatura - " + String(t) + " °C\nHumedad - " + String(h) + "%";
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Enviando mensaje a Telegram");
+    bot.sendMessage(telegramChatID, message, "");
+  } else {
+    Serial.println("WiFi Desconectado");
+  }
+
+  delay(3600000);
+}
+
+// Leer Suelo
+uint16_t readSoil() {
+  uint16_t soil = analogRead(SOIL_PIN);
+  uint16_t soil_percentage = map(soil, soil_min, soil_max, 0, 100);
+  return constrain(soil_percentage, 0, 100);
+}
+
+
+
+// Leer Sal
+uint32_t readSalt() {
+  uint8_t samples = 120;
+  uint32_t humi = 0;
+  uint16_t array[120];
+
+  for (int i = 0; i < samples; i++) {
+    array[i] = analogRead(SALT_PIN);
+    delay(2);
+  }
+  std::sort(array, array + samples);
+  for (int i = 0; i < samples; i++) {
+    if (i == 0 || i == samples - 1)
+      continue;
+    humi += array[i];
+  }
+  humi /= samples - 2;
+  return humi;
+}
